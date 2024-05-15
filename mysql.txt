@@ -1,0 +1,309 @@
+MySQL Pre-checks
+ access request to new servers
+/bin/su - mysql
+/usr/local/bin/pbvi /etc/my.cnf
+/bin/systemctl status mysqld.service
+/bin/systemctl start mysqld.service
+/bin/systemctl stop mysqld.service
+/bin/su - oemagent
+
+Create MySQL user in Server (SA)
+Create mysql user with below uid and gid
+bash-4.2$ id mysql
+uid=27(mysql) gid=27(mysql) groups=27(mysql)
+
+Create oemagent user with
+oemagent and oinstall group
+
+Request oem agent Firewalls
+*****************E1 **************
+Source Server:
+E1 OMS: hvgpl****21/22/23/24
+Name:  oem-dev.test.com 
+Destination Servers
+Ports:
+Source server to destination server à  3872 , 3873, 3874 ,22, 3306
+Please include 3306 port from source (OMS) to DB server 
+Source server to destination server à  3872 , 3873, 3874 ,22,3306
+Destination server to Source à  1159
+
+************E2****************************
+Source Server:
+E2 OMS: hqiqloemwa21/22/23/24
+Name:   oem-qa.test.com
+Destination Servers
+Ports:
+Source server to destination server à  3872 , 3873, 3874 ,22, 3306
+
+Please include 3306 port from source (OMS) to DB server 
+Source server to destination server à  3872 , 3873, 3874 ,22,3306
+Destination server to Source à  1159
+
+*******************************CI Creation for Innodb cluster MYSQL DB*************************************************
+
+Local Filesystems (SA)
+Filesystems	Size in GB	Comments
+/usr/app/oracle	30G	OEM agent
+/mysql	Size depends on Application requirements	Data directory which we keep /mysql/data
+/mysqllogs	10G	MySQL logs
+
+NFS Filesystems (SA)
+Request SA Ben ip for cohesity backup
+Filesystems	Size in GB	Comments
+/ora	Size depends on DB size	This must be mountd on BEN IP, and it will be Cohesity backup mountpoint
+
+
+Bash Profile (DBA - MySQL)
+# .bash_profile
+# Get the aliases and functions
+if [ -f ~/.bashrc ]; then
+        . ~/.bashrc
+fi
+# User specific environment and startup programs
+PATH=$PATH:$HOME/.local/bin:$HOME/bin
+export PATH
+export PATH=/bin:$PATH
+
+Install MySQL (This is done by SA or DBA if have root access)
+
+Download required Mysql Packages from Oracle and untar, Mysql 8.0.18 is already available in fileshare
+E1/E2 → pbrun /bin/mount hqidl*****:/fileshare /mnt/fileshare
+
+cd /mnt/fileshare/oracle_new/Mysql/mysql8018
+Install new packages cd <unzip_dir> yum install *
+yum install mysql*
+copy configuration file from backup
+cp /etc/my.cnf /etc/my.cnf_bak
+
+start mysql 8.0.18
+systemctl start mysqld.service
+systemctl status mysqld.service
+
+Create Required Directories  according to our standards
+mkdir -p /mysql/data
+chown mysql:mysql /mysql/data
+mkdir -p /mysqllogs/binlogs/
+chown mysql:mysql /mysqllogs/binlogs/
+
+MySQL root password setting
+[mysql@hqidlbimdb01 ~]$ mysql -u root -p
+ Enter password:
+Initial Root Password will be Available in mysqld.log under the location :/var/log
+Once login to DB then reset the root password with the our Standard.
+mysql> ALTER USER 'root'@'localhost' IDENTIFIED BY 'password';
+Query OK, 0 rows affected (0.01 sec)
+mysql>
+
+Changing data files location to /mysql/data  & Update the my.cnf file with Required Parameters
+
+pbrun /bin/su - mysql
+Check data file location:
+Login to data base and check.
+[mysql@hqidlbimdb01 ~]$ mysql -u root -p
+ Enter password:
+MySQL> SHOW VARIABLES WHERE Variable_Name LIKE "%dir";
+exit;
+
+stop MySQL
+
+pbrun /bin/systemctl stop mysqld.service
+
+Update data directory path & add required parameters in my.cnf file
+chown  mysql:mysql  /etc/my.cnf
+vi /etc/my.cnf
+[mysqld]
+user=mysql
+port = 3306
+socket=/var/lib/mysql/mysql.sock
+datadir=/mysql/data
+max_connections=500
+max_connect_errors = 100
+general_log=OFF
+symbolic-links=0
+sync_binlog=1
+log-bin=/mysqllogs/binlogs/bin-log
+log-error=/mysqllogs/mysqld.log
+binlog_expire_logs_seconds = 1209600
+server-id=1
+innodb_buffer_pool_size=2G
+innodb_file_per_table = 1
+binlog-format = MIXED
+expire_logs_days = 3
+innodb_log_file_size = 48M
+#tmp_table_size = 128M
+#max_heap_table_size = 128M
+#innodb_additional_mem_pool_size = 32MB
+#innodb_log_buffer_size = 16M
+default-storage-engine=InnoDB
+innodb_flush_log_at_trx_commit=1
+[mysqldump]
+events
+#max_allowed_packet      = 128M
+[mysqld_safe]
+pid-file=/mysql/data/mysqld.pid
+sql_mode=NO_ENGINE_SUBSTITUTION,STRICT_TRANS_TABLES
+
+
+
+Relocate data files to /mysql/data   (copy using MySQL user)
+cp -R /var/lib/mysql/* /mysql/data/
+
+Start MySQL
+pbrun /bin/systemctl start mysqld.service
+Check data file location
+Login to data base use :     mysql -u root -p
+SHOW VARIABLES WHERE Variable_Name LIKE "%dir";
+
+Create Database
+mysql -u root -p
+mysql> create database database_name;
+
+MySQL Backup Configuration
+
+ Create backup user
+ 
+CREATE USER 'backup_user'@'localhost' IDENTIFIED BY '********';   (use our standard password)
+GRANT SELECT, SHOW VIEW, RELOAD, REPLICATION CLIENT, EVENT, TRIGGER, LOCK TABLES, FILE, REPLICATION SLAVE, SUPER ON *.* TO 'backup_user'@'localhost';
+
+To enable password logging for backup_user
+[mysql@hqiqlcosdb01 ~]$ mysql_config_editor set --login-path=backup_user --user=backup_user --password
+enter our standard password when it prompts for password
+
+Login using the backup user
+[mysql@hvidlccpdb01 ~]$ mysql --login-path=backup_user
+ Welcome to the MySQL monitor.  Commands end with ; or \g. Your MySQL connection id is 17 Server version: 8.0.18-commercial MySQL Enterprise Server - Commercial
+Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
+Oracle is a registered trademark of Oracle Corporation and/or its affiliates. Other names may be trademarks of their respective owners.
+Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
+mysql>
+ Add backup script in the server
+vi  /var/lib/mysql/backup_script.sh
+chmod 755 /var/lib/mysql/backup_script.sh
+********************************************************** Backup Script ***************************************************************
+#!/bin/sh
+export HOST=`hostname`
+export backup_date=`date +%m%d%Y%H%M`
+export PATH=/bin:$PATH
+backup_dir="/ora"
+#backup_user="backup_user"
+#backup_password="******"
+login_profile="backup_user"
+mysqldump --login-path=${login_profile} --routines --events --single-transaction --flush-logs --master-data=2 --all-databases > ${backup_dir}/backup_${HOST}_${backup_date}.sql
+gzip ${backup_dir}/backup_${HOST}_${backup_date}.sql
+find ${backup_dir} -type f -mtime +21 -exec rm {} \;
+if [ -z `find ${backup_dir}/backup* -type f -mtime -1|tail -1` ]
+then echo "backup is unsuccessfull" | mailx -s 'Mysql Backup Status' dba@test.com
+else
+echo "backup is successful" | mailx -s 'Mysql Backup Status' dba@test.com
+fi
+****************************************************** End of Script ******************************************************************
+Schedule cron job for backup
+
+00 05 * * * /var/lib/mysql/backup_script.sh > /mysqllogs/backups.log 2>&1
+
+Note: run backup once manually and vaidate the backups are running fine 
+
+Create App user:
+App user - Bimapp --BIM - TLA of project.
+App Password  standard - Bim!4app --will be standard going forward
+create user bimapp@'localhost' identified by 'Bim!4app';
+GRANT USAGE ON *.* TO 'bimapp'@'localhost';–local host is the ip address of the host
+
+Use below to provide access from app servers to DB:-
+mysql> create user bimapp@'ip_address' identified by 'Bim!4app';
+Query OK, 0 rows affected (0.01 sec)
+mysql> GRANT ALL PRIVILEGES ON mdbim01p.* TO 'bimapp'@'ip_address';
+Query OK, 0 rows affected (0.01 sec)
+ — request server ip address to replace 'appservers'      
+providing access to application citrix
+Create user bimapp@'servername' identified by '*****'; GRANT ALL PRIVILEGES ON `mdccp01p`.* TO 'bimapp'@'10.2.120.44' WITH GRANT OPTION;
+
+
+Filesystem monitoring setup
+vi  /var/lib/mysql/FS_alert.sh
+chmod 755  /var/lib/mysql/FS_alert.sh
+********************************************************** Monitoring Script ***************************************************************
+#!/bin/bash
+THRESHOLD=85
+HOST=`hostname`
+df -P|grep -v fileshare|grep -v flashdata|grep -v 'rdo\|mnt'| awk 'int($5) > THRESHOLD {print $6 " is " $5" full " }' THRESHOLD="$THRESHOLD" > /var/lib/mysql/list.txt
+if [ -s /var/lib/mysql/list.txt ]
+then
+mailx -s "Filesystem on $HOST is higher than threshold" dba@test.com < /var/lib/mysql/list.txt
+fi
+****************************************************** End of Script ********************************************************************
+
+ Schedule  cronjob for Filesystem monitroing
+00 */2 * * *  /var/lib/mysql/FS_alert.sh > /mysqllogs/FS_alert.log
+
+   
+Mandatory check before turnover
+Check 1: Make sure mailx is installed on the database host. 
+Check 2:
+make sure mysql user password limits looks like below, if it looks different, work with unix admin and have it fixed before turnover. 
+-bash-4.2$ chage -l mysql
+Last password change : Oct 25, 2016
+Password expires : never
+Password inactive : never
+Account expires : never
+Minimum number of days between password change : -1
+Maximum number of days between password change : -1
+Number of days of warning before password expires : -1
+ -bash-4.2$
+
+ Application access
+
+Application teams will have access to servers with their ADS id, then they can connect to mysql database with mysql database user.
+e.g: mysql -u user -p password
+
+
+*********************Role Creation *******************
+1.	App_ro – read only role
+2.	app_rw – read write role     
+3.	App_admin – Admin role
+mysql> create role app_ro@'%';
+Query OK, 0 rows affected (0.01 sec)
+
+mysql> create role app_rw@'%';
+Query OK, 0 rows affected (0.01 sec)
+
+mysql> create role app_admin@'%';
+Query OK, 0 rows affected (0.00 sec)
+*********************************************Select privilege *******************
+mysql> grant select on <appDB>.* to app_ro;
+Query OK, 0 rows affected (0.00 sec)
+
+********************************insert, delete ,update to read write*******************
+mysql> GRANT INSERT, UPDATE, DELETE ON <AppDB>.* to app_rw;
+Query OK, 0 rows affected (0.01 sec)
+
+
+*************Admin Privilege to app_admin*****************
+
+mysql> grant all on <AppDB>.* to app_admin;
+Query OK, 0 rows affected (0.01 sec)
+
+*****************DBO id for production Support on Production Servers ****************
+CREATE USER 'dboadmin'@'localhost' IDENTIFIED BY '*********';
+GRANT ALL PRIVILEGES ON *.* TO 'dba'@'localhost' WITH GRANT OPTION;
+CREATE USER 'dba'@'%' IDENTIFIED BY '*********';
+GRANT ALL PRIVILEGES ON *.* TO 'dba'@'%' WITH GRANT OPTION;GRANT ALL PRIVILEGES ON *.* TO 'dba'@'%' WITH GRANT OPTION;
+
+Install OEM Agent on Server  and Configure Targets in OEM if there is OEM setup
+     
+***********************************************************************
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
